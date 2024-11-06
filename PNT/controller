@@ -1,0 +1,240 @@
+#include <DFRobot_QMC5883.h>
+
+#include "SparkFun_TB6612.h"
+#include <SoftwareSerial.h>
+#include "RunningAverage.h"
+
+// Pins for all inputs, keep in mind the PWM defines must be on PWM pins
+// the default pins listed are the ones used on the Redbot (ROB-12097) with
+// the exception of STBY which the Redbot controls with a physical switch
+#define AIN1 11
+#define BIN1 6
+#define AIN2 7
+#define BIN2 13
+#define PWMA 10
+#define PWMB 5
+#define STBY 12
+
+SoftwareSerial mySerial(2, 3); // RX, TX. IO1 = TX, IO3 = RX
+
+DFRobot_QMC5883 compass(&Wire, 0x0D);
+
+float heading;
+float posX;
+float posY;
+
+
+float targetPosX = 0;
+float targetPosY = 0;
+
+float targetHeading;
+float kpHeading = 82;
+float uHeading;
+float headingError;
+float headingThreshold = 0.15;
+
+float distanceError;
+float uDistance;
+float kpDistance = 127;
+float distanceThreshold = 0.01;
+
+uint8_t ssRX = 2;
+uint8_t ssTX = 3;
+
+const int offsetA = -1;
+const int offsetB = 1;
+
+Motor motor1 = Motor(AIN1, AIN2, PWMA, offsetA, STBY);
+Motor motor2 = Motor(BIN1, BIN2, PWMB, offsetB, STBY);
+
+sVector_t mag;
+
+//Running Avg
+RunningAverage RAx(10);
+RunningAverage RAy(10);
+
+void setup()
+{
+  Serial.begin(9600);
+  mySerial.begin(115200);
+  pinMode(8, OUTPUT);
+  pinMode(9, OUTPUT);
+  while (!compass.begin())
+  {
+    Serial.println("Could not find a valid 5883 sensor, check wiring!");
+    delay(500);
+  }
+
+  Serial.println("QMC5883 Initializing");
+  float declinationAngle = (15.0 + (10.0 / 60.0)) / (180 / PI);
+  compass.setDeclinationAngle(declinationAngle);
+}
+
+
+int index = 0;
+
+void loop(){
+  /**
+   * @brief  Set declination angle on your location and fix heading
+   * @n      You can find your declination on: http://magnetic-declination.com/
+   * @n      (+) Positive or (-) for negative
+   * @n      Seattle: 15* 10' E
+   * @n      Formula: (deg + (min / 60.0)) / (180 / PI);
+   */
+  mag = compass.readRaw();
+  compass.getHeadingDegrees();
+  heading = mag.HeadingDegress;
+
+
+  heading = convertHeading(heading);
+
+  while(!getPosition()){
+  
+  }
+
+  targetHeading = getTargetHeading(RAx.getAverage(), RAy.getAverage(), targetPosX, targetPosY);
+
+  headingError = heading - targetHeading;
+
+
+  if(headingError > 3.1415926){
+    headingError -= (2*3.1415926);
+  }
+  if(headingError < -3.1415926){
+    headingError += (2*3.1415926);
+  }
+
+
+  distanceError = sqrt(pow((RAx.getAverage() - targetPosX), 2) + pow((RAy.getAverage() - targetPosY), 2));
+
+  // get inputs 
+
+  uHeading = -kpHeading * headingError;
+  uDistance = kpDistance * distanceError;
+
+  //bound u to 255, 255
+  if (uHeading > 255) {
+    uHeading = 255;
+  }
+  if (uHeading < -255) {
+    uHeading = -255;
+  }
+
+  if(uDistance > 255){
+    uDistance = 255;
+  }
+
+  int k = 0;
+
+  //check threshold
+  if(abs(headingError) > headingThreshold){
+    k = 1;
+    //u = uHeading + uDistance;
+  }else{
+    k = 0;
+  }
+
+  // getInput(uHeading, uDistance);
+
+  // rotate and drive
+  if(headingError > 0.3){
+    motor1.drive(uHeading);
+    motor2.drive(-uHeading);
+  }else{
+    motor1.drive(uDistance);
+    motor2.drive(uDistance);
+  }
+
+  // lights
+  if(k * uHeading > 0){
+    digitalWrite(9, HIGH);
+    digitalWrite(8, LOW);
+  }else if(k * uHeading < 0){
+    digitalWrite(9, LOW);
+    digitalWrite(8, HIGH);
+  }else{
+    digitalWrite(9, HIGH);
+    digitalWrite(8, HIGH);
+  }
+  
+
+  //else if(abs(distanceError) > distanceThreshold){
+  //   outlierRejection = 0;
+  //   if (uDistance > 255) {
+  //       uDistance = 255;
+  //   }
+
+  //   // motor1.drive(uDistance);
+  //   // motor2.drive(uDistance);
+
+  //   digitalWrite(8, HIGH);
+  //   digitalWrite(9, HIGH);
+  // }
+
+  // Write to Serial
+  if (index == 100) {
+    Serial.print("heading Error: ");
+    Serial.println(headingError * 180 / 3.1415926);
+
+    Serial.print("heading input: ");
+    Serial.println(uHeading);
+
+    index = 0;
+  }
+  index += 1;
+}
+
+float getTargetHeading(float posX, float posY, float targetPosX, float targetPosY) {
+  float delta_x = targetPosX - posX;
+  float delta_y = targetPosY - posY;
+  return atan2(delta_y, delta_x);
+}
+
+float convertHeading(float heading){
+  // make "north" = the correct place
+
+  if(heading > 60){
+    heading = heading - 60;
+  }else{
+    heading = 360 - (60 - heading);
+  }
+  heading = 360 - heading;
+   
+  // Fix heading to be [-180, 180]
+  if(heading > 180){
+    heading -= 360;
+  }
+  if(heading < -180){
+    heading += 360;
+  }
+  // convert to radians
+  heading *= 3.141592654/180; 
+  return heading;
+}
+
+
+// float getInput(float uHeading, float uDistance){
+//   if((abs(uHeading) + uDistance) > 255){
+//     float difference = 
+//   }
+// }
+
+bool getPosition() {
+  float x, y;
+  if (mySerial.available() > 0) {
+  String receivedString = mySerial.readStringUntil('\n'); // Read the incoming string until newline
+  int commaIndex = receivedString.indexOf(','); // Find the comma separator
+  if (commaIndex > 0 && receivedString.length() == 14) {
+    String xString = receivedString.substring(0, commaIndex); // Extract the X value string
+    String yString = receivedString.substring(commaIndex + 1); // Extract the Y value string
+    x = xString.toFloat(); // Convert the X value string to float
+    y = yString.toFloat(); // Convert the Y value string to float
+    posX = x;
+    posY = y;
+    RAx.addValue(posX);
+    RAy.addValue(posY);
+    return true;
+    }
+  }
+  return false;
+}
